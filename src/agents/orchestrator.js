@@ -39,7 +39,7 @@ export async function runAnalysis({ category, choices, filteredData, profile }) 
   const [pythonCode, chartConfigRaw] = await Promise.all([
     callAI({
       maxTokens: 2000,
-      system: getCodeWriterPrompt(category),
+      system: getCodeWriterPrompt(category) + '\n\nCRITICAL: Return ONLY raw Python code. Absolutely NO markdown. NO backticks. NO ```python. NO ``` anywhere. Just pure Python code that runs directly.',
       user: `Dataset profile:\n${profile.summary}\n\nUser selected:\n${JSON.stringify(choices, null, 2)}\n\nRows: ${filteredData.length}\n\nRules: df is the DataFrame. Last line must be a bare dict variable (NO return statement). All values JSON-serialisable.`
     }),
     callAI({
