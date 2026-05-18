@@ -1,4 +1,5 @@
 // src/components/ResultsPanel.jsx
+import { useState } from 'react'
 import { BarChart, Bar, LineChart, Line, ScatterChart, Scatter, PieChart, Pie, Cell, AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, CartesianGrid } from 'recharts'
 
 const COLORS = ['#185FA5','#0F6E56','#534AB7','#993C1D','#854F0B','#A32D2D']
