@@ -52,133 +52,84 @@ financial: `${BASE}
 import numpy as np
 import pandas as pd
 
-try:
-    from arch import arch_model
-    ARCH_AVAILABLE = True
-except Exception:
-    ARCH_AVAILABLE = False
-
-# Find numeric value column — skip date/text columns
+# Find numeric value column
 value_col = None
 for col in df.columns:
-    col_lower = str(col).lower().strip()
-    if col_lower in ['date','period','time','month','year','index','day','week']:
+    if str(col).lower().strip() in ['date','period','time','month','year','index','day','week']:
         continue
-    try:
-        nums = pd.to_numeric(df[col], errors='coerce').dropna()
-        if len(nums) > len(df) * 0.7 and nums.std() > 0:
-            value_col = col
-            break
-    except Exception:
-        continue
+    nums = pd.to_numeric(df[col], errors='coerce').dropna()
+    if len(nums) > len(df) * 0.7 and nums.std() > 0:
+        value_col = col
+        break
 
-# Fallback to first numeric column
 if value_col is None:
     for col in df.columns:
-        try:
-            nums = pd.to_numeric(df[col], errors='coerce').dropna()
-            if len(nums) > 10:
-                value_col = col
-                break
-        except Exception:
-            continue
+        nums = pd.to_numeric(df[col], errors='coerce').dropna()
+        if len(nums) > 10:
+            value_col = col
+            break
 
-# Exit early if no numeric column found
 if value_col is None:
     result = {"error": "No numeric column found"}
-    result
+else:
+    n_rows = len(df)
+    series = pd.to_numeric(df[value_col], errors='coerce').fillna(method='ffill').dropna()
+    returns = series.pct_change().dropna() * 100
+    mean_r = float(returns.mean())
+    std_r = max(float(returns.std()), 0.0001)
 
-# Sort by date if possible
-for col in df.columns:
-    col_lower = str(col).lower().strip()
-    if col_lower in ['date','period','time','month','year','day']:
-        try:
-            parsed = pd.to_datetime(df[col], format='%d-%b-%y', errors='coerce')
-            if parsed.notna().sum() > len(df) * 0.5:
-                df = df.copy()
-                df[col] = parsed
-                df = df.sort_values(col).reset_index(drop=True)
-                break
-            parsed2 = pd.to_datetime(df[col], errors='coerce')
-            if parsed2.notna().sum() > len(df) * 0.5:
-                df = df.copy()
-                df[col] = parsed2
-                df = df.sort_values(col).reset_index(drop=True)
-                break
-        except Exception:
-            pass
+    # GARCH(1,1) implemented in pure numpy — no arch library needed
+    omega, alpha, beta = 0.1, 0.1, 0.8
+    n = len(returns)
+    sigma2 = np.zeros(n)
+    sigma2[0] = float(returns.var())
+    ret_arr = returns.values
+    for t in range(1, n):
+        sigma2[t] = omega + alpha * ret_arr[t-1]**2 + beta * sigma2[t-1]
+    garch_vol = list(np.sqrt(sigma2))
 
-# Get numeric series and compute returns
-n_rows = len(df)
-series = pd.to_numeric(df[value_col], errors='coerce').dropna()
-returns = series.pct_change().dropna() * 100
-mean_r = float(returns.mean())
-std_r = float(returns.std()) if returns.std() > 0 else 0.0001
+    # Pad to full dataset length
+    pad = n_rows - len(garch_vol)
+    garch_padded = [None] * pad + [float(x) for x in garch_vol]
 
-# GARCH volatility
-garch_vol_raw = []
-if ARCH_AVAILABLE and len(returns) > 30:
-    try:
-        am = arch_model(returns, vol='GARCH', p=1, q=1, rescale=False)
-        res = am.fit(disp='off', show_warning=False)
-        garch_vol_raw = [float(x) for x in res.conditional_volatility.tolist()]
-    except Exception:
-        garch_vol_raw = [float(x) for x in returns.rolling(5).std().bfill().tolist()]
-if len(garch_vol_raw) == 0:
-    garch_vol_raw = [float(x) for x in returns.rolling(5).std().bfill().tolist()]
+    ret_list = returns.tolist()
+    ret_pad = n_rows - len(ret_list)
+    returns_padded = [None] * ret_pad + [float(x) for x in ret_list]
 
-# Pad all series to match n_rows exactly
-def pad_to_length(arr, length):
-    padded = [None] * (length - len(arr)) + list(arr)
-    return padded[:length]
+    # Risk metrics
+    var_95 = float(np.percentile(returns, 5))
+    var_99 = float(np.percentile(returns, 1))
+    below = returns[returns <= var_95]
+    cvar_95 = float(below.mean()) if len(below) > 0 else var_95
+    sharpe = float(mean_r / std_r * np.sqrt(252))
+    neg = returns[returns < 0]
+    down_std = float(neg.std()) if len(neg) > 1 else std_r
+    sortino = float(mean_r / down_std * np.sqrt(252)) if down_std > 0 else 0.0
+    cumul = (1 + returns / 100).cumprod()
+    max_dd = float(((cumul - cumul.cummax()) / cumul.cummax()).min())
+    ann_ret = float(mean_r * 252)
+    ann_vol = float(std_r * np.sqrt(252))
 
-garch_padded   = pad_to_length(garch_vol_raw, n_rows)
-returns_list   = [float(x) for x in returns.tolist()]
-returns_padded = pad_to_length(returns_list, n_rows)
+    chart_data = [
+        {"index": i, "GARCH_volatility": g, "Returns": r}
+        for i, (g, r) in enumerate(zip(garch_padded, returns_padded))
+        if g is not None and r is not None
+    ]
 
-# Risk metrics
-var_95  = float(np.percentile(returns, 5))
-var_99  = float(np.percentile(returns, 1))
-below   = returns[returns <= var_95]
-cvar_95 = float(below.mean()) if len(below) > 0 else var_95
-
-# Performance metrics
-sharpe   = float(mean_r / std_r * np.sqrt(252))
-down_std = float(returns[returns < 0].std()) if len(returns[returns < 0]) > 1 else std_r
-sortino  = float(mean_r / down_std * np.sqrt(252)) if down_std > 0 else 0.0
-
-# Max drawdown
-cumul     = (1 + returns / 100).cumprod()
-roll_max  = cumul.cummax()
-drawdown  = (cumul - roll_max) / roll_max
-max_dd    = float(drawdown.min())
-
-ann_ret = float(mean_r * 252)
-ann_vol = float(std_r * np.sqrt(252))
-
-# Chart data for rendering
-chart_data = []
-for i in range(n_rows):
-    if garch_padded[i] is not None and returns_padded[i] is not None:
-        chart_data.append({"index": i, "GARCH_volatility": garch_padded[i], "Returns": returns_padded[i]})
-
-result = {
-    "GARCH_volatility":   garch_padded,
-    "Returns":            returns_padded,
-    "garch_volatility":   garch_padded,
-    "volatility_series":  returns_padded,
-    "chartData":          chart_data,
-    "var_95":             round(var_95, 4),
-    "var_99":             round(var_99, 4),
-    "cvar_95":            round(cvar_95, 4),
-    "sharpe_ratio":       round(sharpe, 4),
-    "sortino_ratio":      round(sortino, 4),
-    "max_drawdown":       round(max_dd, 4),
-    "annualised_return":  round(ann_ret, 4),
-    "annualised_vol":     round(ann_vol, 4),
-    "interpretation":     f"{value_col}: Sharpe {round(sharpe,2)}, Ann.Return {round(ann_ret,2)}%, Max DD {round(max_dd*100,2)}%, Avg Vol {round(std_r,2)}%"
-}
-result`,
+    result = {
+        "GARCH_volatility":  garch_padded,
+        "Returns":           returns_padded,
+        "chartData":         chart_data,
+        "var_95":            round(var_95, 4),
+        "var_99":            round(var_99, 4),
+        "cvar_95":           round(cvar_95, 4),
+        "sharpe_ratio":      round(sharpe, 4),
+        "sortino_ratio":     round(sortino, 4),
+        "max_drawdown":      round(max_dd, 4),
+        "annualised_return": round(ann_ret, 4),
+        "annualised_vol":    round(ann_vol, 4),
+        "interpretation":    f"{value_col}: Sharpe {round(sharpe,2)}, Ann.Return {round(ann_ret,2)}%, Max DD {round(max_dd*100,2)}%, Avg Vol {round(std_r,2)}%"
+    }`,
 
     marketing: `${BASE}
 import pandas as pd; import numpy as np
