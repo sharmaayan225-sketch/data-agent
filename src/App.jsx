@@ -47,28 +47,142 @@ export default function App() {
     setLoadingCats(false)
   }
 
-  const handleRunAnalysis = async (choices) => {
-    setAnalysisLoading(true); setAnalysisError(null)
-    try {
-      const result = await runAnalysis({ category:activeCategory, choices, filteredData, profile })
-      setResults(prev => [result, ...prev])
-      if (result.newColumns?.length > 0) {
-        const newColNames = result.newColumns.map(c => c.name)
-        let updated = [...memoryData]
-        newColNames.forEach(colName => {
-          const values = result.result?.[colName] || []
-          if (Array.isArray(values) && values.length === updated.length) {
-            updated = updated.map((row,i) => ({ ...row, [colName]: values[i] }))
-          }
-        })
-        setMemoryData(updated)
-        const newProf = reprofileWithDerived(updated, profile, newColNames)
-        setProfile(newProf); setSlicers(detectSlicerColumns(updated, newProf))
+ const handleRunAnalysis = async (choices) => {
+  setAnalysisLoading(true); setAnalysisError(null)
+  try {
+    const result = await runAnalysis({ category: activeCategory, choices, filteredData, profile })
+    setResults(prev => [result, ...prev])
+
+    // ── MEMORY SYSTEM ──────────────────────────────────────────
+    // Extract ALL array-type results and save them as new columns.
+    // This includes GARCH_volatility, RFM_segment, predictions, etc.
+    // We do this automatically — no need to rely on AI identifying columns.
+
+    const rawResult = result.result || {}
+    const numRows = memoryData.length
+    let updated = [...memoryData]
+    const newColNames = []
+
+    // Strategy 1: columns explicitly identified by the AI
+    if (result.newColumns && result.newColumns.length > 0) {
+      result.newColumns.forEach(({ name }) => {
+        const values = rawResult[name]
+        if (Array.isArray(values) && values.length === numRows) {
+          updated = updated.map((row, i) => ({ ...row, [name]: values[i] }))
+          newColNames.push(name)
+        }
+      })
+    }
+
+    // Strategy 2: scan ALL result keys for arrays matching row count
+    // This catches everything the AI missed — GARCH_volatility, predictions, etc.
+    const categoryPrefix = {
+      financial:   'FIN_',
+      regression:  'REG_',
+      ml_models:   'ML_',
+      marketing:   'MKT_',
+      hr:          'HR_',
+      operations:  'OPS_',
+      text_nlp:    'NLP_',
+      eda:         'EDA_',
+      stats_tests: 'STAT_',
+    }
+    const prefix = categoryPrefix[activeCategory] || ''
+
+    Object.entries(rawResult).forEach(([key, values]) => {
+      // Only save arrays that match the row count exactly
+      if (!Array.isArray(values)) return
+      if (values.length !== numRows) return
+      // Skip keys already saved in Strategy 1
+      if (newColNames.includes(key)) return
+      // Skip internal/debug keys
+      if (['chartData', '__error', '__code'].includes(key)) return
+
+      // Name the column: use key directly if it already has a good name,
+      // otherwise prefix it so the user knows where it came from
+      const colName = key.startsWith('GARCH_') || key.startsWith('RFM_') ||
+                      key.startsWith('CLV_') || key.startsWith('Churn_') ||
+                      key.startsWith('ML_') || key.startsWith('Regression_')
+                      ? key
+                      : `${prefix}${key}`
+
+      updated = updated.map((row, i) => ({ ...row, [colName]: values[i] }))
+      newColNames.push(colName)
+    })
+
+    // Strategy 3: for financial, always extract key series by name
+    if (activeCategory === 'financial') {
+      const financialCols = {
+        'GARCH_volatility':   rawResult.garch_volatility || rawResult.GARCH_volatility,
+        'Volatility_series':  rawResult.volatility_series,
+        'Returns':            rawResult.volatility_series,  // returns are stored here
       }
-      setActiveCategory(null)
-    } catch(e) { setAnalysisError(e.message) }
-    setAnalysisLoading(false)
+      Object.entries(financialCols).forEach(([colName, values]) => {
+        if (Array.isArray(values) && values.length === numRows && !newColNames.includes(colName)) {
+          updated = updated.map((row, i) => ({ ...row, [colName]: values[i] }))
+          newColNames.push(colName)
+        }
+      })
+    }
+
+    // Strategy 4: for regression, extract predicted and residuals
+    if (activeCategory === 'regression') {
+      const target = choices.target || 'Value'
+      const regCols = {
+        [`${target}_predicted`]: rawResult.predicted || rawResult.Regression_predicted,
+        [`${target}_residual`]:  rawResult.residuals || rawResult.Regression_residual,
+      }
+      Object.entries(regCols).forEach(([colName, values]) => {
+        if (Array.isArray(values) && values.length === numRows && !newColNames.includes(colName)) {
+          updated = updated.map((row, i) => ({ ...row, [colName]: values[i] }))
+          newColNames.push(colName)
+        }
+      })
+    }
+
+    // Strategy 5: for marketing, extract RFM/CLV/Churn per-row values
+    if (activeCategory === 'marketing') {
+      const mktCols = {
+        'RFM_segment':    rawResult.rfm_values,
+        'CLV_estimated':  rawResult.clv_values,
+        'Churn_risk':     rawResult.churn_values,
+      }
+      Object.entries(mktCols).forEach(([colName, values]) => {
+        if (Array.isArray(values) && values.length === numRows && !newColNames.includes(colName)) {
+          updated = updated.map((row, i) => ({ ...row, [colName]: values[i] }))
+          newColNames.push(colName)
+        }
+      })
+    }
+
+    // Strategy 6: for ML, extract predictions and cluster labels
+    if (activeCategory === 'ml_models') {
+      const mlCols = {
+        'ML_prediction': rawResult.predictions || rawResult.ML_prediction,
+      }
+      Object.entries(mlCols).forEach(([colName, values]) => {
+        if (Array.isArray(values) && values.length === numRows && !newColNames.includes(colName)) {
+          updated = updated.map((row, i) => ({ ...row, [colName]: values[i] }))
+          newColNames.push(colName)
+        }
+      })
+    }
+
+    // ── UPDATE STATE ───────────────────────────────────────────
+    if (newColNames.length > 0) {
+      console.log('New columns saved to memory:', newColNames)
+      setMemoryData(updated)
+      const newProf = reprofileWithDerived(updated, profile, newColNames)
+      setProfile(newProf)
+      setSlicers(detectSlicerColumns(updated, newProf))
+    }
+
+    setActiveCategory(null)
+  } catch(e) {
+    setAnalysisError(e.message)
   }
+  setAnalysisLoading(false)
+}
 
   const handleNextStep = (step, fromCat) => {
     const s = step.toLowerCase()
