@@ -48,22 +48,129 @@ Run appropriate test based on choices: t-test, ANOVA, chi-square, Mann-Whitney, 
 Compute effect size: Cohen's d for t-test, eta-squared for ANOVA, Cramer's V for chi-square.
 result = {"test_name": "str", "statistic": 0.0, "p_value": 0.0, "reject_null": False, "effect_size": 0.0, "effect_label": "str", "conclusion": "plain English str", "group_means": {}}`,
 
-    financial: `${BASE}
+financial: `${BASE}
 import numpy as np
+import pandas as pd
+
 try:
     from arch import arch_model
     ARCH_AVAILABLE = True
-except: ARCH_AVAILABLE = False
+except:
+    ARCH_AVAILABLE = False
 
-Compute log returns, then:
-- If ARCH_AVAILABLE: fit GARCH(1,1) and get volatility forecast
-- Else: use rolling std as volatility proxy
-- VaR_95 = returns.quantile(0.05), CVaR_95 = returns[returns<=VaR_95].mean()
-- Sharpe = mean_return/std_return * np.sqrt(252)
-- Sortino = mean_return/downside_std * np.sqrt(252)
-- Max drawdown from cumulative returns
-- Store GARCH_volatility list for memory
-result = {"volatility_series": [], "garch_volatility": [], "var_95": 0.0, "var_99": 0.0, "cvar_95": 0.0, "sharpe_ratio": 0.0, "sortino_ratio": 0.0, "max_drawdown": 0.0, "annualised_return": 0.0, "annualised_vol": 0.0, "interpretation": "str", "GARCH_volatility": []}`,
+# Find the best numeric column to analyse
+# Skip date, text, and index columns
+value_col = None
+for col in df.columns:
+    col_lower = str(col).lower()
+    if col_lower in ['date','period','time','month','year','index','day','week']:
+        continue
+    nums = pd.to_numeric(df[col], errors='coerce')
+    valid = nums.dropna()
+    if len(valid) > len(df) * 0.7 and valid.std() > 0:
+        value_col = col
+        break
+
+# Fallback to first numeric column if nothing found
+if value_col is None:
+    for col in df.columns:
+        nums = pd.to_numeric(df[col], errors='coerce').dropna()
+        if len(nums) > 10:
+            value_col = col
+            break
+
+if value_col is None:
+    result = {"error": "No numeric column found. Please select a numeric price or return column."}
+else:
+    # Sort by date if date column exists
+    for col in df.columns:
+        col_lower = str(col).lower()
+        if col_lower in ['date','period','time','month','year','day']:
+            try:
+                parsed = pd.to_datetime(df[col], format='%d-%b-%y', errors='coerce')
+                if parsed.notna().sum() > len(df) * 0.5:
+                    df[col] = parsed
+                    df = df.sort_values(col).reset_index(drop=True)
+                    break
+                parsed2 = pd.to_datetime(df[col], errors='coerce')
+                if parsed2.notna().sum() > len(df) * 0.5:
+                    df[col] = parsed2
+                    df = df.sort_values(col).reset_index(drop=True)
+                    break
+            except:
+                pass
+
+    # Get numeric series
+    series = pd.to_numeric(df[value_col], errors='coerce').dropna()
+
+    if len(series) < 10:
+        result = {"error": f"Not enough data in column {value_col}. Need at least 10 rows."}
+    else:
+        # Compute returns
+        returns = series.pct_change().dropna() * 100
+        mean_r = float(returns.mean())
+        std_r = float(returns.std())
+
+        # GARCH volatility
+        garch_vol = []
+        if ARCH_AVAILABLE and len(returns) > 30:
+            try:
+                am = arch_model(returns, vol='GARCH', p=1, q=1, rescale=False)
+                res = am.fit(disp='off', show_warning=False)
+                garch_vol = [float(x) for x in res.conditional_volatility.tolist()]
+            except Exception as e:
+                garch_vol = [float(x) for x in returns.rolling(5).std().bfill().tolist()]
+        else:
+            garch_vol = [float(x) for x in returns.rolling(5).std().bfill().tolist()]
+
+        # Pad garch_vol to match original df length
+        pad_len = len(df) - len(garch_vol)
+        garch_vol_padded = [None] * pad_len + garch_vol
+
+        # Returns padded to match df length
+        returns_padded = [None] + [float(x) for x in returns.tolist()]
+        while len(returns_padded) < len(df):
+            returns_padded.append(None)
+        returns_padded = returns_padded[:len(df)]
+
+        # Risk metrics
+        var_95 = float(np.percentile(returns, 5))
+        var_99 = float(np.percentile(returns, 1))
+        below_95 = returns[returns <= var_95]
+        cvar_95 = float(below_95.mean()) if len(below_95) > 0 else var_95
+
+        # Performance
+        sharpe = float(mean_r / std_r * np.sqrt(252)) if std_r != 0 else 0.0
+        downside = returns[returns < 0].std()
+        sortino = float(mean_r / downside * np.sqrt(252)) if downside != 0 else 0.0
+
+        # Max drawdown
+        cumulative = (1 + returns / 100).cumprod()
+        rolling_max = cumulative.cummax()
+        drawdown = (cumulative - rolling_max) / rolling_max
+        max_dd = float(drawdown.min())
+
+        ann_return = float(mean_r * 252)
+        ann_vol = float(std_r * np.sqrt(252))
+
+        result = {
+            "volatility_series": returns_padded,
+            "garch_volatility": garch_vol_padded,
+            "GARCH_volatility": garch_vol_padded,
+            "Returns": returns_padded,
+            "var_95": round(var_95, 4),
+            "var_99": round(var_99, 4),
+            "cvar_95": round(cvar_95, 4),
+            "sharpe_ratio": round(sharpe, 4),
+            "sortino_ratio": round(sortino, 4),
+            "max_drawdown": round(max_dd, 4),
+            "annualised_return": round(ann_return, 4),
+            "annualised_vol": round(ann_vol, 4),
+            "chartData": [{"index": i, "GARCH_volatility": v, "Returns": r}
+                         for i, (v, r) in enumerate(zip(garch_vol_padded, returns_padded))
+                         if v is not None],
+            "interpretation": f"Analysis of {value_col}: Sharpe ratio {round(sharpe,2)}, annualised return {round(ann_return,2)}%, max drawdown {round(max_dd*100,2)}%, avg volatility {round(std_r,2)}%"
+        }`,
 
     marketing: `${BASE}
 import pandas as pd; import numpy as np
