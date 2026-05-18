@@ -33,13 +33,16 @@ await micropip.install('lifetimes')
 }
 
 function sanitisePython(code) {
-  // Remove top-level return statements (common Llama model mistake)
+  // Remove markdown code fences that AI sometimes includes
+  code = code.replace(/```python\s*/gi, '').replace(/```\s*/gi, '')
+  
+  // Remove top-level return statements
   const lines = code.split('\n')
   return lines.map(line => {
     const trimmed = line.trimStart()
     const indent = line.length - trimmed.length
     if (indent === 0 && trimmed.startsWith('return ')) {
-      return trimmed.slice(7)  // remove 'return ' but keep the value
+      return trimmed.slice(7)
     }
     return line
   }).join('\n')
