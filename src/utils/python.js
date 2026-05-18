@@ -33,17 +33,15 @@ await micropip.install('lifetimes')
 }
 
 function sanitisePython(code) {
-  // Remove markdown code fences that AI sometimes includes
-  code = code.replace(/```python\s*/gi, '').replace(/```\s*/gi, '')
-  
+  // Remove ALL markdown artifacts
+  code = code.replace(/```python\s*/gi, '')
+  code = code.replace(/```\s*/gi, '')
+  code = code.replace(/`/g, '')
   // Remove top-level return statements
-  const lines = code.split('\n')
-  return lines.map(line => {
+  return code.split('\n').map(line => {
     const trimmed = line.trimStart()
     const indent = line.length - trimmed.length
-    if (indent === 0 && trimmed.startsWith('return ')) {
-      return trimmed.slice(7)
-    }
+    if (indent === 0 && trimmed.startsWith('return ')) return trimmed.slice(7)
     return line
   }).join('\n')
 }
