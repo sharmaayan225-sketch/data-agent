@@ -1,5 +1,5 @@
 // src/App.jsx
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { initPython } from './utils/python.js'
 import { profileData, reprofileWithDerived } from './utils/profiler.js'
 import { detectSlicerColumns, applySlicers, applyChartClick } from './utils/slicers.js'
@@ -11,11 +11,9 @@ import CategoryPanel from './components/CategoryPanel.jsx'
 import ResultsPanel from './components/ResultsPanel.jsx'
 
 export default function App() {
-  const [pyodide, setPyodide]               = useState(null)
   const [pythonReady, setPythonReady]       = useState(false)
   const [pythonStatus, setPythonStatus]     = useState('Loading Python...')
   const [filename, setFilename]             = useState(null)
-  const [rawData, setRawData]               = useState([])
   const [memoryData, setMemoryData]         = useState([])
   const [filteredData, setFilteredData]     = useState([])
   const [profile, setProfile]               = useState(null)
@@ -28,164 +26,151 @@ export default function App() {
   const [analysisError, setAnalysisError]   = useState(null)
   const [results, setResults]               = useState([])
 
+  // Use a ref so handleRunAnalysis always sees latest memoryData
+  const memoryRef = useRef([])
+  const profileRef = useRef(null)
+
   useEffect(() => {
-    initPython(s => setPythonStatus(s)).then(py => { setPyodide(py); setPythonReady(true) }).catch(e => setPythonStatus('Python error: ' + e.message))
+    memoryRef.current = memoryData
+  }, [memoryData])
+
+  useEffect(() => {
+    profileRef.current = profile
+  }, [profile])
+
+  useEffect(() => {
+    initPython(s => setPythonStatus(s))
+      .then(() => setPythonReady(true))
+      .catch(e => setPythonStatus('Python error: ' + e.message))
   }, [])
 
   useEffect(() => {
-    if (memoryData.length > 0) setFilteredData(applySlicers(memoryData, slicerState))
+    if (memoryData.length > 0) {
+      setFilteredData(applySlicers(memoryData, slicerState))
+    }
   }, [slicerState, memoryData])
 
   const handleDataLoaded = async (data, fname) => {
-    setFilename(fname); setRawData(data); setMemoryData(data); setFilteredData(data)
-    setSlicerState({}); setResults([]); setActiveCategory(null); setAnalysisError(null)
-    const prof = profileData(data); setProfile(prof)
+    setFilename(fname)
+    setMemoryData(data)
+    memoryRef.current = data
+    setFilteredData(data)
+    setSlicerState({})
+    setResults([])
+    setActiveCategory(null)
+    setAnalysisError(null)
+    const prof = profileData(data)
+    setProfile(prof)
+    profileRef.current = prof
     setSlicers(detectSlicerColumns(data, prof))
     setLoadingCats(true)
     try { setCategories(await getRecommendedCategories(prof)) }
-    catch(e) { setCategories(['charts','eda','data_quality','report']) }
+    catch { setCategories(['charts','eda','data_quality','report']) }
     setLoadingCats(false)
   }
 
- const handleRunAnalysis = async (choices) => {
-  setAnalysisLoading(true); setAnalysisError(null)
-  try {
-    const result = await runAnalysis({ category: activeCategory, choices, filteredData, profile })
-    setResults(prev => [result, ...prev])
+  const handleRunAnalysis = async (choices) => {
+    setAnalysisLoading(true)
+    setAnalysisError(null)
+    try {
+      const currentData = memoryRef.current
+      const currentProfile = profileRef.current
 
-    // ── MEMORY SYSTEM ──────────────────────────────────────────
-    // Extract ALL array-type results and save them as new columns.
-    // This includes GARCH_volatility, RFM_segment, predictions, etc.
-    // We do this automatically — no need to rely on AI identifying columns.
-
-    const rawResult = result.result || {}
-    const numRows = memoryData.length
-    let updated = [...memoryData]
-    const newColNames = []
-
-    // Strategy 1: columns explicitly identified by the AI
-    if (result.newColumns && result.newColumns.length > 0) {
-      result.newColumns.forEach(({ name }) => {
-        const values = rawResult[name]
-        if (Array.isArray(values) && values.length === numRows) {
-          updated = updated.map((row, i) => ({ ...row, [name]: values[i] }))
-          newColNames.push(name)
-        }
+      const result = await runAnalysis({
+        category: activeCategory,
+        choices,
+        filteredData: applySlicers(currentData, slicerState),
+        profile: currentProfile
       })
-    }
 
-    // Strategy 2: scan ALL result keys for arrays matching row count
-    // This catches everything the AI missed — GARCH_volatility, predictions, etc.
-    const categoryPrefix = {
-      financial:   'FIN_',
-      regression:  'REG_',
-      ml_models:   'ML_',
-      marketing:   'MKT_',
-      hr:          'HR_',
-      operations:  'OPS_',
-      text_nlp:    'NLP_',
-      eda:         'EDA_',
-      stats_tests: 'STAT_',
-    }
-    const prefix = categoryPrefix[activeCategory] || ''
+      setResults(prev => [result, ...prev])
 
-    Object.entries(rawResult).forEach(([key, values]) => {
-      // Only save arrays that match the row count exactly
-      if (!Array.isArray(values)) return
-      if (values.length !== numRows) return
-      // Skip keys already saved in Strategy 1
-      if (newColNames.includes(key)) return
-      // Skip internal/debug keys
-      if (['chartData', '__error', '__code'].includes(key)) return
+      // ── EXTRACT ALL PER-ROW ARRAYS AND SAVE TO MEMORY ──────
+      const rawResult = result.result || {}
+      const numRows = currentData.length
+      let updated = [...currentData]
+      const newColNames = []
 
-      // Name the column: use key directly if it already has a good name,
-      // otherwise prefix it so the user knows where it came from
-      const colName = key.startsWith('GARCH_') || key.startsWith('RFM_') ||
-                      key.startsWith('CLV_') || key.startsWith('Churn_') ||
-                      key.startsWith('ML_') || key.startsWith('Regression_')
-                      ? key
-                      : `${prefix}${key}`
+      // Scan every key in the result for arrays matching row count
+      Object.entries(rawResult).forEach(([key, values]) => {
+        if (!Array.isArray(values)) return
+        if (values.length !== numRows) return
+        if (['chartData', '__error', '__code'].includes(key)) return
 
-      updated = updated.map((row, i) => ({ ...row, [colName]: values[i] }))
-      newColNames.push(colName)
-    })
+        // Clean column name
+        const colName = [
+          'GARCH_volatility','Returns','Volatility_series',
+          'RFM_segment','CLV_estimated','Churn_risk',
+          'ML_prediction','Regression_predicted','Regression_residual'
+        ].includes(key) ? key : `${activeCategory}_${key}`
 
-    // Strategy 3: for financial, always extract key series by name
-    if (activeCategory === 'financial') {
-      const financialCols = {
-        'GARCH_volatility':   rawResult.garch_volatility || rawResult.GARCH_volatility,
-        'Volatility_series':  rawResult.volatility_series,
-        'Returns':            rawResult.volatility_series,  // returns are stored here
+        updated = updated.map((row, i) => ({
+          ...row,
+          [colName]: values[i] !== undefined ? values[i] : null
+        }))
+        newColNames.push(colName)
+        console.log(`✓ Saved column: ${colName} (${values.length} values)`)
+      })
+
+      // Also check known column names by alias
+      const aliases = {
+        financial: {
+          'GARCH_volatility': rawResult.garch_volatility || rawResult.GARCH_volatility,
+          'Returns':          rawResult.volatility_series || rawResult.Returns,
+        },
+        regression: {
+          'Regression_predicted': rawResult.predicted || rawResult.Regression_predicted,
+          'Regression_residual':  rawResult.residuals || rawResult.Regression_residual,
+        },
+        ml_models: {
+          'ML_prediction': rawResult.predictions || rawResult.ML_prediction,
+        },
+        marketing: {
+          'RFM_segment':   rawResult.rfm_values,
+          'CLV_estimated': rawResult.clv_values,
+          'Churn_risk':    rawResult.churn_values,
+        }
       }
-      Object.entries(financialCols).forEach(([colName, values]) => {
-        if (Array.isArray(values) && values.length === numRows && !newColNames.includes(colName)) {
-          updated = updated.map((row, i) => ({ ...row, [colName]: values[i] }))
-          newColNames.push(colName)
-        }
-      })
-    }
 
-    // Strategy 4: for regression, extract predicted and residuals
-    if (activeCategory === 'regression') {
-      const target = choices.target || 'Value'
-      const regCols = {
-        [`${target}_predicted`]: rawResult.predicted || rawResult.Regression_predicted,
-        [`${target}_residual`]:  rawResult.residuals || rawResult.Regression_residual,
+      const catAliases = aliases[activeCategory] || {}
+      Object.entries(catAliases).forEach(([colName, values]) => {
+        if (!Array.isArray(values)) return
+        if (newColNames.includes(colName)) return  // already saved
+        // Pad or trim to match row count
+        let padded = [...values]
+        while (padded.length < numRows) padded.unshift(null)
+        padded = padded.slice(-numRows)
+        updated = updated.map((row, i) => ({ ...row, [colName]: padded[i] }))
+        newColNames.push(colName)
+        console.log(`✓ Saved aliased column: ${colName} (${padded.length} values)`)
+      })
+
+      // Update state with new columns
+      if (newColNames.length > 0) {
+        console.log('All new columns saved to memory:', newColNames)
+        const newProf = reprofileWithDerived(updated, currentProfile, newColNames)
+        // Update refs immediately so next render uses correct data
+        memoryRef.current = updated
+        profileRef.current = newProf
+        // Then update state
+        setMemoryData(updated)
+        setProfile(newProf)
+        setSlicers(detectSlicerColumns(updated, newProf))
+      } else {
+        console.warn('No per-row arrays found in result. Nothing saved to memory.')
+        console.log('Result keys:', Object.keys(rawResult))
       }
-      Object.entries(regCols).forEach(([colName, values]) => {
-        if (Array.isArray(values) && values.length === numRows && !newColNames.includes(colName)) {
-          updated = updated.map((row, i) => ({ ...row, [colName]: values[i] }))
-          newColNames.push(colName)
-        }
-      })
+
+      // Small delay before returning to Layer 1 so state updates settle
+      await new Promise(r => setTimeout(r, 150))
+      setActiveCategory(null)
+
+    } catch(e) {
+      console.error('Analysis error:', e)
+      setAnalysisError(e.message)
     }
-
-    // Strategy 5: for marketing, extract RFM/CLV/Churn per-row values
-    if (activeCategory === 'marketing') {
-      const mktCols = {
-        'RFM_segment':    rawResult.rfm_values,
-        'CLV_estimated':  rawResult.clv_values,
-        'Churn_risk':     rawResult.churn_values,
-      }
-      Object.entries(mktCols).forEach(([colName, values]) => {
-        if (Array.isArray(values) && values.length === numRows && !newColNames.includes(colName)) {
-          updated = updated.map((row, i) => ({ ...row, [colName]: values[i] }))
-          newColNames.push(colName)
-        }
-      })
-    }
-
-    // Strategy 6: for ML, extract predictions and cluster labels
-    if (activeCategory === 'ml_models') {
-      const mlCols = {
-        'ML_prediction': rawResult.predictions || rawResult.ML_prediction,
-      }
-      Object.entries(mlCols).forEach(([colName, values]) => {
-        if (Array.isArray(values) && values.length === numRows && !newColNames.includes(colName)) {
-          updated = updated.map((row, i) => ({ ...row, [colName]: values[i] }))
-          newColNames.push(colName)
-        }
-      })
-    }
-
-    // ── UPDATE STATE ───────────────────────────────────────────
-    if (newColNames.length > 0) {
-  console.log('New columns saved to memory:', newColNames)
-  const newProf = reprofileWithDerived(updated, profile, newColNames)
-  // Update all state together before clearing active category
-  setMemoryData(updated)
-  setProfile(newProf)
-  setSlicers(detectSlicerColumns(updated, newProf))
-  // Small delay ensures React has processed state updates before Layer 1 re-renders
-  await new Promise(r => setTimeout(r, 100))
-}
-
-setActiveCategory(null)
-  } catch(e) {
-    setAnalysisError(e.message)
+    setAnalysisLoading(false)
   }
-  setAnalysisLoading(false)
-}
 
   const handleNextStep = (step, fromCat) => {
     const s = step.toLowerCase()
@@ -197,8 +182,9 @@ setActiveCategory(null)
     else if (s.includes('rfm')||s.includes('clv')||s.includes('churn')) cat='marketing'
     else if (s.includes('t-test')||s.includes('anova')||s.includes('statistic')) cat='stats_tests'
     else if (s.includes('eda')||s.includes('distribut')||s.includes('correlat')) cat='eda'
-    else if (s.includes('export')||s.includes('report')||s.includes('pdf')) cat='report'
-    setActiveCategory(cat); setAnalysisError(null)
+    else if (s.includes('export')||s.includes('report')) cat='report'
+    setActiveCategory(cat)
+    setAnalysisError(null)
     setTimeout(() => document.getElementById('analysis-panel')?.scrollIntoView({behavior:'smooth',block:'start'}), 100)
   }
 
@@ -219,15 +205,20 @@ setActiveCategory(null)
 
       {filename && (
         <>
+          {/* Session bar */}
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', background:'#f4f3f0', border:'0.5px solid #ddd', borderRadius:10, padding:'8px 14px', marginBottom:12, flexWrap:'wrap', gap:8 }}>
             <div style={{ display:'flex', alignItems:'center', gap:10 }}>
               <span style={{ fontSize:13, fontWeight:500 }}>📁 {filename}</span>
               <span style={{ fontSize:11, color:'#888' }}>{memoryData.length.toLocaleString()} rows · {profile?.columnCount} cols</span>
               {results.length > 0 && <span style={{ fontSize:10, background:'#E1F5EE', color:'#085041', padding:'1px 7px', borderRadius:999, fontWeight:700 }}>{results.length} {results.length===1?'analysis':'analyses'} run</span>}
             </div>
-            <button onClick={() => { setFilename(null); setRawData([]); setMemoryData([]); setResults([]); setProfile(null); setCategories([]) }} style={{ fontSize:11, padding:'3px 10px', borderRadius:999, border:'0.5px solid #ccc', background:'transparent', cursor:'pointer', color:'#555' }}>Upload different file</button>
+            <button onClick={() => { setFilename(null); setMemoryData([]); setResults([]); setProfile(null); setCategories([]) }}
+              style={{ fontSize:11, padding:'3px 10px', borderRadius:999, border:'0.5px solid #ccc', background:'transparent', cursor:'pointer', color:'#555' }}>
+              Upload different file
+            </button>
           </div>
 
+          {/* Memory strip — shows derived columns */}
           {profile && Object.values(profile.columns).some(c => c.isDerived) && (
             <div style={{ background:'#EEEDFE', border:'0.5px solid #AFA9EC', borderRadius:8, padding:'7px 12px', marginBottom:12, display:'flex', flexWrap:'wrap', gap:6, alignItems:'center' }}>
               <span style={{ fontSize:9, fontWeight:700, color:'#3C3489', textTransform:'uppercase', letterSpacing:'0.05em' }}>🧠 Memory</span>
@@ -237,27 +228,45 @@ setActiveCategory(null)
             </div>
           )}
 
+          {/* Slicer bar */}
           <SlicerBar slicers={slicers} slicerState={slicerState} onChange={setSlicerState} totalRows={memoryData.length} filteredRows={filteredData.length} />
 
-          {loadingCats && <div style={{ fontSize:12, color:'#888', marginBottom:12, fontStyle:'italic' }}>Agent is reading your data and selecting analysis types...</div>}
+          {loadingCats && <div style={{ fontSize:12, color:'#888', marginBottom:12, fontStyle:'italic' }}>Agent is reading your data...</div>}
 
+          {/* Layer 1 grid */}
           {!activeCategory && categories.length > 0 && (
             <div style={{ marginBottom:20 }}>
-              <div style={{ fontSize:12, fontWeight:500, color:'#555', marginBottom:10 }}>{results.length===0 ? 'Select an analysis type to begin:' : 'Select another analysis (previous results saved below):'}</div>
+              <div style={{ fontSize:12, fontWeight:500, color:'#555', marginBottom:10 }}>
+                {results.length === 0 ? 'Select an analysis type to begin:' : 'Select another analysis (previous results saved below):'}
+              </div>
               <Layer1Grid recommendedIds={categories} onSelect={cat => { setActiveCategory(cat); setAnalysisError(null) }} runHistory={results} />
             </div>
           )}
 
+          {/* Category panel */}
           <div id="analysis-panel">
-            {activeCategory && <CategoryPanel category={activeCategory} profile={profile} filteredData={filteredData} onRun={handleRunAnalysis} onBack={() => setActiveCategory(null)} loading={analysisLoading} />}
+            {activeCategory && (
+              <CategoryPanel category={activeCategory} profile={profile} filteredData={filteredData}
+                onRun={handleRunAnalysis} onBack={() => setActiveCategory(null)} loading={analysisLoading} />
+            )}
           </div>
 
-          {analysisError && <div style={{ background:'#FCEBEB', border:'0.5px solid #A32D2D', borderRadius:8, padding:'10px 14px', marginBottom:12, fontSize:12, color:'#501313' }}>⚠️ {analysisError}</div>}
+          {analysisError && (
+            <div style={{ background:'#FCEBEB', border:'0.5px solid #A32D2D', borderRadius:8, padding:'10px 14px', marginBottom:12, fontSize:12, color:'#501313' }}>
+              ⚠️ {analysisError}
+            </div>
+          )}
 
+          {/* All results */}
           {results.length > 0 && (
             <div>
-              <div style={{ fontSize:12, fontWeight:500, color:'#555', marginBottom:10, marginTop:4 }}>Results ({results.length} {results.length===1?'run':'runs'}):</div>
-              {results.map(r => <ResultsPanel key={r.id} result={r} onNextStep={handleNextStep} onChartBarClick={(col,val) => setSlicerState(prev => applyChartClick(prev,col,val))} />)}
+              <div style={{ fontSize:12, fontWeight:500, color:'#555', marginBottom:10, marginTop:4 }}>
+                Results ({results.length} {results.length===1?'run':'runs'}):
+              </div>
+              {results.map(r => (
+                <ResultsPanel key={r.id} result={r} onNextStep={handleNextStep}
+                  onChartBarClick={(col, val) => setSlicerState(prev => applyChartClick(prev, col, val))} />
+              ))}
             </div>
           )}
         </>
