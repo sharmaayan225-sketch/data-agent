@@ -43,48 +43,178 @@ export default function ResultsPanel({ result, onNextStep, onChartBarClick }) {
 }
 
 function ChartRenderer({ chartConfig, data, onBarClick }) {
+  const [hiddenSeries, setHiddenSeries] = useState([])
+  const [refArea, setRefArea] = useState({ left: '', right: '' })
+  const [zoomDomain, setZoomDomain] = useState(null)
+  const [isSelecting, setIsSelecting] = useState(false)
+
   if (!chartConfig || !data?.chartData || !Array.isArray(data.chartData) || data.chartData.length === 0) return null
+
   const { type, xKey, yKeys, colorBy } = chartConfig
   const yList = Array.isArray(yKeys) ? yKeys : (chartConfig.yKey ? [chartConfig.yKey] : [])
   if (!xKey || yList.length === 0) return null
-  const chartData = data.chartData
 
-  const wrap = (children) => (
-    <div style={{ marginBottom:14 }}>
-      {data.title && <div style={{ fontSize:12, fontWeight:600, color:'#555', marginBottom:8 }}>{data.title}</div>}
-      <ResponsiveContainer width="100%" height={240}>{children}</ResponsiveContainer>
-      {onBarClick && <div style={{ fontSize:10, color:'#aaa', marginTop:4 }}>💡 Click a bar to filter data by that value</div>}
+  const chartData = data.chartData
+  const visibleData = zoomDomain
+    ? chartData.filter((_, i) => i >= zoomDomain[0] && i <= zoomDomain[1])
+    : chartData
+
+  const toggleSeries = (dataKey) => {
+    setHiddenSeries(prev =>
+      prev.includes(dataKey) ? prev.filter(s => s !== dataKey) : [...prev, dataKey]
+    )
+  }
+
+  const handleMouseDown = (e) => {
+    if (!e) return
+    setIsSelecting(true)
+    setRefArea({ left: e.activeLabel, right: '' })
+  }
+
+  const handleMouseMove = (e) => {
+    if (!isSelecting || !e) return
+    setRefArea(prev => ({ ...prev, right: e.activeLabel }))
+  }
+
+  const handleMouseUp = () => {
+    if (!isSelecting) return
+    setIsSelecting(false)
+    if (refArea.left === refArea.right || !refArea.right) {
+      setRefArea({ left: '', right: '' })
+      return
+    }
+    const leftIdx = chartData.findIndex(d => String(d[xKey]) === String(refArea.left))
+    const rightIdx = chartData.findIndex(d => String(d[xKey]) === String(refArea.right))
+    if (leftIdx !== -1 && rightIdx !== -1) {
+      const [l, r] = leftIdx < rightIdx ? [leftIdx, rightIdx] : [rightIdx, leftIdx]
+      setZoomDomain([l, r])
+    }
+    setRefArea({ left: '', right: '' })
+  }
+
+  const resetZoom = () => { setZoomDomain(null); setRefArea({ left: '', right: '' }) }
+
+  // Format X axis labels — show date if available
+  const formatXAxis = (val) => {
+    if (!val) return ''
+    const str = String(val)
+    // If it looks like a date string, shorten it
+    if (str.includes('-') && str.length > 8) {
+      try {
+        const d = new Date(str)
+        if (!isNaN(d)) return `${d.getDate()}-${d.toLocaleString('default',{month:'short'})}`
+      } catch { }
+    }
+    // If numeric index, just show every 20th
+    return str.length > 10 ? str.slice(0, 8) + '..' : str
+  }
+
+  // Custom legend with click-to-toggle
+  const renderLegend = () => (
+    <div style={{ display:'flex', justifyContent:'center', gap:16, marginTop:8, flexWrap:'wrap' }}>
+      {yList.map((key, i) => {
+        const hidden = hiddenSeries.includes(key)
+        return (
+          <div key={key} onClick={() => toggleSeries(key)}
+            style={{ display:'flex', alignItems:'center', gap:5, cursor:'pointer',
+              opacity: hidden ? 0.35 : 1, transition:'opacity 0.2s',
+              padding:'3px 10px', borderRadius:999,
+              border: `1px solid ${COLORS[i % COLORS.length]}`,
+              background: hidden ? 'transparent' : `${COLORS[i % COLORS.length]}18`
+            }}>
+            <div style={{ width:10, height:10, borderRadius:2, background: hidden ? '#ccc' : COLORS[i % COLORS.length] }} />
+            <span style={{ fontSize:11, color: hidden ? '#aaa' : '#555' }}>{key}</span>
+            <span style={{ fontSize:9, color:'#aaa' }}>{hidden ? '(hidden)' : '(click to hide)'}</span>
+          </div>
+        )
+      })}
     </div>
   )
 
-  const handleClick = (e) => { if (e?.activeLabel && onBarClick) onBarClick(xKey, e.activeLabel) }
+  const commonProps = {
+    data: visibleData,
+    onMouseDown: handleMouseDown,
+    onMouseMove: handleMouseMove,
+    onMouseUp: handleMouseUp,
+  }
+
+  const wrap = (children) => (
+    <div style={{ marginBottom:14, userSelect:'none' }}>
+      {data.title && <div style={{ fontSize:12, fontWeight:600, color:'#555', marginBottom:4 }}>{data.title}</div>}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6, flexWrap:'wrap', gap:6 }}>
+        <div style={{ fontSize:10, color:'#aaa' }}>
+          🔍 Click and drag on chart to zoom in
+        </div>
+        <div style={{ display:'flex', gap:6 }}>
+          {zoomDomain && (
+            <button onClick={resetZoom} style={{ fontSize:10, padding:'2px 8px', borderRadius:999, border:'0.5px solid #185FA5', background:'#E6F1FB', color:'#185FA5', cursor:'pointer' }}>
+              Reset zoom
+            </button>
+          )}
+          {onBarClick && (
+            <div style={{ fontSize:10, color:'#aaa' }}>💡 Click a bar to filter</div>
+          )}
+        </div>
+      </div>
+      <ResponsiveContainer width="100%" height={260}>
+        {children}
+      </ResponsiveContainer>
+      {renderLegend()}
+    </div>
+  )
 
   if (type === 'pie') return wrap(
     <PieChart>
-      <Pie data={chartData} dataKey={yList[0]} nameKey={xKey} cx="50%" cy="50%" outerRadius={90} label={e=>`${e[xKey]}: ${Math.round((e.percent||0)*100)}%`}>
-        {chartData.map((_,i) => <Cell key={i} fill={COLORS[i%COLORS.length]} />)}
-      </Pie><Tooltip />
+      <Pie data={visibleData} dataKey={yList[0]} nameKey={xKey} cx="50%" cy="50%" outerRadius={90}
+        label={e => `${e[xKey]}: ${Math.round((e.percent||0)*100)}%`}>
+        {visibleData.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} />)}
+      </Pie>
+      <Tooltip />
     </PieChart>
   )
+
   if (type === 'scatter') return wrap(
-    <ScatterChart><CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-      <XAxis dataKey={xKey} tick={{fontSize:10}} /><YAxis dataKey={yList[0]} tick={{fontSize:10}} />
-      <Tooltip /><Scatter data={chartData} fill={COLORS[0]} />
+    <ScatterChart {...commonProps}>
+      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+      <XAxis dataKey={xKey} tick={{ fontSize:10 }} tickFormatter={formatXAxis} />
+      <YAxis tick={{ fontSize:10 }} />
+      <Tooltip />
+      <Scatter data={visibleData} fill={COLORS[0]} />
     </ScatterChart>
   )
+
   if (type === 'line' || type === 'area') return wrap(
-    <LineChart data={chartData}><CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-      <XAxis dataKey={xKey} tick={{fontSize:10}} /><YAxis tick={{fontSize:10}} />
-      <Tooltip />{yList.length>1&&<Legend wrapperStyle={{fontSize:11}}/>}
-      {yList.map((k,i) => <Line key={k} dataKey={k} stroke={COLORS[i%COLORS.length]} dot={false} strokeWidth={2} />)}
+    <LineChart {...commonProps}>
+      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+      <XAxis dataKey={xKey} tick={{ fontSize:9 }} tickFormatter={formatXAxis} interval="preserveStartEnd" />
+      <YAxis tick={{ fontSize:10 }} />
+      <Tooltip labelFormatter={(label) => `Date: ${label}`} />
+      {yList.map((k, i) => (
+        !hiddenSeries.includes(k) &&
+        <Line key={k} dataKey={k} stroke={COLORS[i % COLORS.length]}
+          dot={false} strokeWidth={2} hide={hiddenSeries.includes(k)} />
+      ))}
+      {refArea.left && refArea.right && (
+        <ReferenceArea x1={refArea.left} x2={refArea.right} strokeOpacity={0.3} fill="#185FA5" fillOpacity={0.1} />
+      )}
     </LineChart>
   )
+
+  // Default bar chart
   return wrap(
-    <BarChart data={chartData} onClick={handleClick} style={{cursor:'pointer'}}>
+    <BarChart {...commonProps} onClick={(e) => { if (e?.activeLabel && onBarClick) onBarClick(xKey, e.activeLabel) }}
+      style={{ cursor: onBarClick ? 'pointer' : 'default' }}>
       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-      <XAxis dataKey={xKey} tick={{fontSize:10}} /><YAxis tick={{fontSize:10}} />
-      <Tooltip />{yList.length>1&&<Legend wrapperStyle={{fontSize:11}}/>}
-      {yList.map((k,i) => <Bar key={k} dataKey={k} fill={COLORS[i%COLORS.length]} />)}
+      <XAxis dataKey={xKey} tick={{ fontSize:9 }} tickFormatter={formatXAxis} interval="preserveStartEnd" />
+      <YAxis tick={{ fontSize:10 }} />
+      <Tooltip labelFormatter={(label) => `${xKey}: ${label}`} />
+      {yList.map((k, i) => (
+        !hiddenSeries.includes(k) &&
+        <Bar key={k} dataKey={k} fill={COLORS[i % COLORS.length]} />
+      ))}
+      {refArea.left && refArea.right && (
+        <ReferenceArea x1={refArea.left} x2={refArea.right} strokeOpacity={0.3} fill="#185FA5" fillOpacity={0.1} />
+      )}
     </BarChart>
   )
 }
