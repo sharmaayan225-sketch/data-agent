@@ -16,7 +16,7 @@ export function profileData(data) {
 
     const dateCount = sample.filter(v => {
       const s = String(v)
-      return s.length >= 6 && !isNaN(Date.parse(s)) && /\d{4}|\d{2}[-/]\d{2}/.test(s)
+      return s.length >= 6 && (!isNaN(Date.parse(s)) || /\d{2}-[A-Za-z]{3}-\d{2,4}/.test(s)) && (s.includes('-') || s.includes('/'))
     }).length
 
     const textCount = sample.filter(v => typeof v === 'string' && v.length > 30).length
