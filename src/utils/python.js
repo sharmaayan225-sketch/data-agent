@@ -14,14 +14,6 @@ export async function initPython(onProgress) {
     pyodideInstance = await loadPyodide()
     onProgress?.('Installing pandas, numpy, scipy...')
     await pyodideInstance.loadPackage(['pandas','numpy','scipy','scikit-learn','statsmodels','matplotlib'])
-    onProgress?.('Installing financial libraries...')
-    try {
-      await pyodideInstance.runPythonAsync(`
-import micropip
-await micropip.install('arch')
-await micropip.install('lifetimes')
-      `)
-    } catch(e) { console.warn('Optional packages failed:', e.message) }
     onProgress?.('Python ready ✓')
     isLoading = false
     return pyodideInstance
