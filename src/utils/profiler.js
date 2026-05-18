@@ -74,10 +74,36 @@ function buildSummary(columns, profiles, rowCount) {
 }
 
 export function reprofileWithDerived(data, previousProfile, newColNames) {
+  if (!data || data.length === 0) return previousProfile
+  
+  // Build fresh profile of entire dataset including new columns
   const newProfile = profileData(data)
   if (!newProfile) return previousProfile
+
+  // Force-mark ALL new columns as derived so they appear purple
   newColNames.forEach(col => {
-    if (newProfile.columns[col]) newProfile.columns[col].isDerived = true
+    if (newProfile.columns[col]) {
+      newProfile.columns[col].isDerived = true
+      // Also force numeric derived columns to appear in Y axis picker
+      // by ensuring they are typed as numeric
+      const vals = data.map(r => r[col]).filter(v => v != null)
+      const numCount = vals.filter(v => !isNaN(Number(v))).length
+      if (numCount > vals.length * 0.7) {
+        newProfile.columns[col].type = 'numeric'
+      }
+    }
   })
+
+  // Also preserve isDerived flag for any columns already marked derived
+  // in the previous profile (so they don't lose their purple colour)
+  if (previousProfile) {
+    Object.entries(previousProfile.columns).forEach(([col, meta]) => {
+      if (meta.isDerived && newProfile.columns[col]) {
+        newProfile.columns[col].isDerived = true
+      }
+    })
+  }
+
   return newProfile
+}
 }
