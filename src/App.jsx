@@ -170,14 +170,17 @@ export default function App() {
 
     // ── UPDATE STATE ───────────────────────────────────────────
     if (newColNames.length > 0) {
-      console.log('New columns saved to memory:', newColNames)
-      setMemoryData(updated)
-      const newProf = reprofileWithDerived(updated, profile, newColNames)
-      setProfile(newProf)
-      setSlicers(detectSlicerColumns(updated, newProf))
-    }
+  console.log('New columns saved to memory:', newColNames)
+  const newProf = reprofileWithDerived(updated, profile, newColNames)
+  // Update all state together before clearing active category
+  setMemoryData(updated)
+  setProfile(newProf)
+  setSlicers(detectSlicerColumns(updated, newProf))
+  // Small delay ensures React has processed state updates before Layer 1 re-renders
+  await new Promise(r => setTimeout(r, 100))
+}
 
-    setActiveCategory(null)
+setActiveCategory(null)
   } catch(e) {
     setAnalysisError(e.message)
   }
