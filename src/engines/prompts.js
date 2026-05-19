@@ -188,7 +188,7 @@ else:
         feat_imp = dict(sorted(feat_imp.items(), key=lambda x: x[1], reverse=True))
 
         # Chart data — feature importance bar chart
-        chart_data = [{"feature": k, "importance": v} for k, v in feat_imp.items()]
+        chart_data = [{"Feature": k, "Importance": round(v * 100, 2)} for k, v in feat_imp.items()]
 
         # Predictions list — pad to full df length
         ML_prediction = [
