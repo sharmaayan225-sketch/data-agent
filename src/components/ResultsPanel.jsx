@@ -202,17 +202,36 @@ function ChartRenderer({ chartConfig, data, onBarClick }) {
   )
 
   // Default bar chart
+  // Default bar chart
   return wrap(
-    <BarChart {...commonProps} onClick={(e) => { if (e?.activeLabel && onBarClick) onBarClick(xKey, e.activeLabel) }}
-      style={{ cursor: onBarClick ? 'pointer' : 'default' }}>
+    <BarChart
+      {...commonProps}
+      data={visibleData}
+      layout={visibleData.length > 0 && visibleData[0].feature ? 'vertical' : 'horizontal'}
+      onClick={(e) => { if (e?.activeLabel && onBarClick) onBarClick(xKey, e.activeLabel) }}
+      style={{ cursor: onBarClick ? 'pointer' : 'default' }}
+      margin={{ top: 5, right: 30, left: 80, bottom: 5 }}
+    >
       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-      <XAxis dataKey={xKey} tick={{ fontSize:9 }} tickFormatter={formatXAxis} interval="preserveStartEnd" />
-      <YAxis tick={{ fontSize:10 }} />
-      <Tooltip labelFormatter={(label) => `${xKey}: ${label}`} />
-      {yList.map((k, i) => (
-        !hiddenSeries.includes(k) &&
-        <Bar key={k} dataKey={k} fill={COLORS[i % COLORS.length]} />
-      ))}
+      {visibleData.length > 0 && visibleData[0].feature
+        ? <>
+            <XAxis type="number" tick={{ fontSize: 10 }} tickFormatter={v => `${(v*100).toFixed(1)}%`} />
+            <YAxis type="category" dataKey="feature" tick={{ fontSize: 10 }} width={80} />
+            <Tooltip formatter={(v) => `${(v*100).toFixed(2)}%`} />
+            {!hiddenSeries.includes('importance') &&
+              <Bar dataKey="importance" fill={COLORS[0]} radius={[0, 4, 4, 0]} />
+            }
+          </>
+        : <>
+            <XAxis dataKey={xKey} tick={{ fontSize: 9 }} tickFormatter={formatXAxis} interval="preserveStartEnd" />
+            <YAxis tick={{ fontSize: 10 }} />
+            <Tooltip labelFormatter={(label) => `${xKey}: ${label}`} />
+            {yList.map((k, i) => (
+              !hiddenSeries.includes(k) &&
+              <Bar key={k} dataKey={k} fill={COLORS[i % COLORS.length]} />
+            ))}
+          </>
+      }
       {refArea.left && refArea.right && (
         <ReferenceArea x1={refArea.left} x2={refArea.right} strokeOpacity={0.3} fill="#185FA5" fillOpacity={0.1} />
       )}
