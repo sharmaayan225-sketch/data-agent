@@ -45,7 +45,7 @@ export async function runAnalysis({ category, choices, filteredData, profile }) 
     callAI({
       maxTokens: 400,
       system: `Design a Recharts chart config. Return ONLY JSON: { "type": "bar"|"line"|"scatter"|"pie"|"area", "xKey": "colname", "yKeys": ["col1"], "title": "title", "colorBy": null }. Use only actual column names from the profile.`,
-      user: `Columns: ${JSON.stringify(Object.keys(profile.columns))}\nTypes: ${JSON.stringify(Object.fromEntries(Object.entries(profile.columns).map(([k,v])=>[k,v.type])))}\nCategory: ${category}\nChoices: ${JSON.stringify(choices)}`
+      user: `Columns: ${JSON.stringify(Object.keys(profile.columns))}\nTypes: ${JSON.stringify(Object.fromEntries(Object.entries(profile.columns).map(([k,v])=>[k,v.type])))}\nCategory: ${category}\nChoices: ${JSON.stringify(choices)}\n\nIMPORTANT: For ml_models category, return: {"type":"bar","xKey":"Feature","yKeys":["Importance"],"title":"Feature Importance","colorBy":null}\nFor financial category, return: {"type":"line","xKey":"index","yKeys":["GARCH_volatility","Returns"],"title":"GARCH Volatility and Returns","colorBy":null}`
     })
   ])
 
